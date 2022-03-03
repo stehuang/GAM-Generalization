@@ -74,18 +74,20 @@ simulate_network <- function(network=1, n_simulations=1, cluster=NULL, inv.metho
   #create data frame
   results <- as.data.frame(matrix(ncol = 10, nrow = 0))
 
+  # formatting folder name according to invertible func type
   if(inv.method=="sl"){
     folder_name = paste("network", network, sep="")
   }else{
     folder_name = paste("network", network, "_random", sep="")
   }
   
-  # generate toy networks
+  # generate datasets and learn networks
   for(i in c(1:n_simulations)){
     gc()
-    print(i)
+    # generate dataset
     test = DAGdatagen(n = 1000, dag.bn = true_bn, inv.method = inv.method, ninv.arcs = ninv.arcs, ninv.method = "nl3")
     toy_data = as.data.frame(test$DAGdata)
+    # save dataset
     saveRDS(toy_data, file = paste(folder_name, "/example", i,".Rds", sep=""))
     # learn skeleton
     start_time <- Sys.time()
@@ -93,24 +95,26 @@ simulate_network <- function(network=1, n_simulations=1, cluster=NULL, inv.metho
     end_time <- Sys.time()
   
     
-    # output deleted edge
+    # save deleted edges
     del_edges <- temp_skeleton[[2]]
     if(is.null(del_edges) == FALSE){
       del_edges <- as.matrix(del_edges[,c(1,2)])
     }
-    # convert skeleton to pdag
+    # convert PC skeleton to cpdag
     pc_cpdag = bnlearn::empty.graph(colnames(true_amat))
     amat(pc_cpdag) = get_cpdag(toy_data, temp_skeleton[[3]])
+    # convert GAM skeleton to cpdag
     gam_cpdag = bnlearn::empty.graph(colnames(true_amat))
-    print(del_edges[,c(1,2)])
-    amat(gam_cpdag) = get_cpdag(toy_data, temp_skeleton[[1]], blacklist=del_edges)
+    amat(gam_cpdag) = get_cpdag(toy_data, temp_skeleton[[1]], blacklist=del_edges) # make sure deleted edges aren't added back
     
     # save to results
     total_time <- as.numeric(end_time - start_time, unit = "secs")
     gam_time <- attr(temp_skeleton[[1]], "gam_time")
+    # compare PC/PC-GAM skeletons w/ true skeleton
     pc_bn_diff <- skeleton_eval(true_bn, pc_cpdag)
     gam_bn_diff <- skeleton_eval(true_bn, gam_cpdag)
     gam_del_results <- (pc_bn_diff - gam_bn_diff)[c(2,1)]
+    # save results into larger dataframe
     results <- rbind(results, c(pc_bn_diff, gam_bn_diff, gam_del_results, total_time, gam_time))
   }
   names(results) <- c('pc_truepos', 'pc_falsepos', 'pc_falseneg', 'gam_truepos', 'gam_falsepos', 'gam_falseneg', 'gam_delete_tp', 'gam_delete_fn', 'total_time', 'gam_time')
@@ -121,20 +125,7 @@ simulate_network <- function(network=1, n_simulations=1, cluster=NULL, inv.metho
 
 # perform simulations
 results <- simulate_network(n_simulations = 300, network="sachs", inv.method="sl")
-results3 <- simulate_network(n_simulations = 300, network="mildew", inv.method="random")
-results4 <- simulate_network(n_simulations = 300, network="mildew", inv.method="sl")
 
-# write.csv(as.data.frame(rbind(results2, results3)),"network2_random/results2.csv")
-
-simulate_network(n_simulations = 2, network=2, inv.method="sl")
-
-# how to read saved data
-# example43 <- readRDS("network3_random/example43.Rds", refhook = NULL)
-
-results$pc_truepos-results2$gam_truepos == results2$gam_delete_fn
-results$pc_falsepos-results2$gam_falsepos == results2$gam_delete_tp
-
-mean(results$gam_time)
 
 
 

@@ -95,6 +95,7 @@ GAM_edgedel <- function(data, alpha=0.05, standardized=FALSE, cluster=NULL){
   start_time = Sys.time()
   for(curr_node in names(gam_skeleton)){
     curr_nbr <- get_nbr(gam_skeleton, curr_node)
+    # only consider nodes with more than 2 neighbors
     if(length(curr_nbr) <= 2) {next}
     
     # run gam model
@@ -108,13 +109,13 @@ GAM_edgedel <- function(data, alpha=0.05, standardized=FALSE, cluster=NULL){
     insig_edges <- which(m1_pval > alpha)
     insig_edges_pval <- unname(m1_pval[insig_edges])
 
-    # iteratively delete insignificant edges &
+    # iteratively delete insignificant edges
     for(j in 1:length(insig_edges)){
       if(length(insig_edges) == 0){
         break
       }
       insig_node <- curr_nbr[insig_edges[j]]
-      # update skeleton by dropping arc
+      # update skeleton by dropping arc & updating conditioning set
       dsep_set <- curr_nbr[-insig_edges]
       gam_skeleton <- drop_arc(gam_skeleton, curr_node, insig_node, insig_edges_pval[j], dsep_set)
       cond_set <- rbind(cond_set, c(curr_node, insig_node))
@@ -129,7 +130,7 @@ GAM_edgedel <- function(data, alpha=0.05, standardized=FALSE, cluster=NULL){
   }else{
     cond_set = NULL
   }
-  
+  # record time for GAM procedure
   attr(gam_skeleton , "gam_time") <- as.numeric(end_time - start_time, unit = "secs")
   
   return(list(gam_skeleton, cond_set, pc_skeleton))
@@ -175,38 +176,10 @@ loadRData <- function(fileName){
 }
 
 
-# function to check the comprehensiveness/completeness of PC output
-# input: true network, pc skeleton
-# output: number of true pos, false pos, false negs compared to true dag
-pc_eval <- function(true_bn, pc_cpdag){
-  # unname(unlist(bnlearn::compare(bnlearn:::skeleton(true_bn), bnlearn:::skeleton(pc_cpdag))))
-  dag_diff <- bnlearn::compare(bnlearn:::skeleton(true_bn), bnlearn:::skeleton(pc_cpdag))
-  return(c(dag_diff$tp, dag_diff$fp, dag_diff$fn))
-  
-}
 
-# function to check the performance of GAM procedure
-# input: true network, conditioning set from GAM_edgedel()
+# function to compare true skeleton and estimated skeleton
+# input: true network, estimated cpdag
 # output: number of edges deleted correctly & incorrectly
-gam_eval <- function(true_bn, gam_cpdag){
-  # compare gam skeleton to true skeleton
-  dag_diff <- bnlearn::compare(bnlearn:::skeleton(true_bn), bnlearn:::skeleton(gam_cpdag))
-  return(c(dag_diff$tp, dag_diff$fp, dag_diff$fn))
-  # # if no edges were deleted
-  # if(nrow(del_edges)==0){return(c(dag_diff$tp, dag_diff$fp, dag_diff$fn, 0, 0))}
-  # # check if edges were correctly deleted
-  # true_positive <- 0
-  # for(i in c(1:nrow(del_edges))){
-  #   n1 <- del_edges[i,1]
-  #   n2 <- del_edges[i,2]
-  #   # if deleted edge is in agreement w/ true bn
-  #   if(amat(true_bn)[n1,n2]==0 && amat(true_bn)[n2,n1]==0){
-  #     true_positive <- true_positive+1
-  #   }
-  # }
-  # return(c(dag_diff$tp, dag_diff$fp, dag_diff$fn, true_positive, nrow(del_edges)-true_positive))
-}
-
 skeleton_eval <- function(true_bn, est_cpdag){
   # unname(unlist(bnlearn::compare(bnlearn:::skeleton(true_bn), bnlearn:::skeleton(pc_cpdag))))
   dag_diff <- bnlearn::compare(bnlearn:::skeleton(true_bn), bnlearn:::skeleton(est_cpdag))
