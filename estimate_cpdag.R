@@ -1,36 +1,12 @@
 library(bnlearn)
-# library(RBGL)
 library(pcalg)
 library(mgcv)
 library(devtools)
 library(igraph)
-# library(sparsebn)
-# load package to use pPC function
-# install_github("jirehhuang/phsl")
 library(phsl)
 library(parallel)
-# library(discretization)
-# library(arules)
-# library(mboost)
-
-
-# purpose: gets parents (directed/undirected edges) of node
-# input: skeleton from pPC_skeleton()/list of nodes from bnlearn obj, node
-# output: directed/undirected parents of node (with labels of being pa or not) or FALSE if no parents/node
-get_potential_pa = function(x, node, include_nbr = TRUE) {
-  # check if node is in skeleton
-  if(node %in% names(x)){
-    pa_set <- x[[node]]$nbr[!x[[node]]$nbr %in% x[[node]]$children]
-    if(length(pa_set) > 0){
-      return(NULL)
-    }else{
-      return(pa_set)
-    }
-  }
-  else{
-    return(NULL)
-  }
-}
+# install.packages("sparsebn")
+# library(sparsebn)
 
 
 # function: get local structure that corresponds to the "nodes" feature in bnlearn obj
@@ -54,7 +30,7 @@ get_local_structure <- function(adjmat, add_dsep_set = TRUE){
 }
 
 
-# function: add "dsep.set" attribute to estimated skeleton
+# function: add "dsep.set" attribute to estimated skeleton; used for finding new separating sets
 # input: adjmat of skeleton
 # output: list of lists to be added as "dsep.set" attribute
 get_dsep_set <- function(adjmat, nodelabels=rownames(adjmat)){
@@ -69,6 +45,7 @@ get_dsep_set <- function(adjmat, nodelabels=rownames(adjmat)){
   skel_arcs <- skel_arcs[skel_arcs[,1]!=skel_arcs[,2],]
   colnames(skel_arcs) <- c("from", "to")
 
+  # find the smallest separating set (i.e. smallest number of neighboring nodes) for two nodes connected by edge
   for(i in c(1:nrow(skel_arcs))){
     arc <- as.vector(skel_arcs[i,])
     n1 <- arc[1]
@@ -90,11 +67,25 @@ get_dsep_set <- function(adjmat, nodelabels=rownames(adjmat)){
   return(dsep.set)
 }
 
-# function: to estimate initial skeleton
-# input: data, learning algorithm
-# output: estimated skeleton
-estimate_skeleton <- function(data, nodelabels=colnames(data), standardized=FALSE, cluster=NULL,
-                              learning_alg='PC', pc_params=list(alpha=0.01, alpha_dense=0.2, test='cor'), ccdr_pc_alpha = pc_params$alpha,
+
+#' STEP 1 OF ALGORITHM: Learning the initial CPDAG from data
+#'
+#' Learns a dense CPDAG from data; skeleton is estimated under a relaxed threshold, and conditional indep relations are detected using a strigent threshold
+#'
+#' @param data observed data
+#' @param standardized standardize data or not
+#' @param learning_alg options are "PC" or "ccdr"
+#' @param pc_params parameters to pass into PC algorithm; alpha is threshold for CI tests for v-structure detection, alpha_dense is for learning the skeleton
+#' @param ccdr_pc_alpha estimates CPDAG from PC to determine size of DAG from ccdr
+#' @param ccdr_params parameters to pass into ccdr algorithm
+#' @return CPDAG as object of bnlearn
+#' @author Stella Huang (\email{stellahyh@@ucla.edu})
+#' @examples
+#' estimate_cpdag(data, standardized=T, learning_alg="PC", pc_params(alpha=0.05, alpha_dense=0.25, test='cor'))
+#' @export
+#' 
+estimate_cpdag <- function(data, nodelabels=colnames(data), standardized=FALSE, cluster=NULL,
+                              learning_alg='PC', pc_params=list(alpha=0.01, alpha_dense=0.25, test='cor'), ccdr_pc_alpha = 0.01,
                               ccdr_params=list(pc_alpha=ccdr_pc_alpha, lambdas.length=15, gamma=2, max.iters = sparsebnUtils::default_max_iters(ncol(data)),
                                             ccdr_alpha = sparsebnUtils::default_alpha(), error.tol = 1e-4, verbose=FALSE), debug=FALSE){
   start_time = Sys.time()
@@ -106,65 +97,66 @@ estimate_skeleton <- function(data, nodelabels=colnames(data), standardized=FALS
   data <- as.data.frame(data)
   data <- bnlearn:::check.data(data, allow.missing = TRUE)
   
-  # run pPC algorithm to estimate skeleton
-    if(learning_alg %in% c("PC", "pc")){ ## pc algorithm
-      pc_alpha <- pc_params$alpha
-      pc_alpha_dense <- pc_params$alpha_dense
-      test <- pc_params$test
-      start_time_est = Sys.time()
-      # discretize data if using mutual information
-      if(test=="mi"){
-        data <- apply(data, MARGIN=2, FUN=function(x) as.factor(infotheo::discretize(x, disc="equalwidth", nbins=round(nrow(data))/50)$X))
-        data <- as.data.frame(unclass(data),stringsAsFactors=TRUE)
-        data <- bnlearn:::check.data(data, allow.missing = TRUE)
-      }
-      dense_skeleton <- bnlearn:::pc.stable.backend(x=as.data.frame(data), whitelist = NULL, blacklist = NULL, test=test,
-                                                    alpha=pc_alpha_dense, max.sx = 3, B=0L)
-      # remove dsep set to re-run CI test with stricter threshold
-      attr(dense_skeleton, "dsep.set") <- NULL
-      # detect and apply v-structures
-      dense_skeleton_obj <- learn_arc_directions_pdag(x=as.data.frame(data), local.structure = dense_skeleton,
-                                                 blacklist=NULL, whitelist=NULL, max.sx = 3, debug=debug,
-                                                 test=test, alpha=pc_alpha, vs=NULL)
-      pdag_amat <- bnlearn:::arcs2amat(dense_skeleton_obj$arcs, colnames(data))
-      # pdag_amat <- phsl:::apply_cpdag_rules(pdag=pdag_amat, nodes=nodelabels, remove_invalid=TRUE, debug=debug)
-      init_cpdag <- empty.graph(nodelabels)
-      amat(init_cpdag, check.cycles=FALSE) <- pdag_amat
-      
-      # add directed edges to whitelist
-      init_cpdag$learning$whitelist <- bnlearn::directed.arcs(init_cpdag)
-      end_time_est = Sys.time()
-    }else{ ## sparsebn
-      start_time_est = Sys.time()
-      # estimate solution path; sb_dag returns multiple DAGs
-      dat <- sparsebnData(data, type = "c", ivn = NULL)
-      sb_dag <- ccdrAlgorithm::ccdr.run(data = dat,
-                                        lambdas.length = ccdr_params$lambdas.length,
-                                        whitelist = NULL,
-                                        blacklist = NULL,
-                                        gamma = ccdr_params$gamma,
-                                        error.tol = ccdr_params$error.tol,
-                                        max.iters = ccdr_params$max.iters,
-                                        alpha = ccdr_params$ccdr_alpha,
-                                        verbose = ccdr_params$verbose)
-      dag_index <- sparsebnUtils::select.parameter(sb_dag, dat)
-      # select optimal dag based on PC skeleton density
-      pcnet <- pc.stable(data, alpha=ccdr_pc_alpha)
-      pcnet_edges <- nrow(bnlearn::skeleton(pcnet)$arcs)/2
-      # select dag with the closest number of edges as pc skeleton
-      curr_dag <- sparsebnUtils::select(sb_dag, edges = pcnet_edges*(1))
-      init_skeleton <- sparsebnUtils:::to_bn(curr_dag)$edges
-      init_cpdag <- get_init_cpdag(data, skeleton=init_skeleton, blacklist=NULL, debug=FALSE)
-      end_time_est = Sys.time()
+  # run PC algorithm to estimate skeleton
+  if(learning_alg %in% c("PC", "pc")){ ## pc algorithm
+    pc_alpha <- pc_params$alpha
+    pc_alpha_dense <- pc_params$alpha_dense
+    test <- pc_params$test
+    start_time_est = Sys.time()
+    # discretize data if using mutual information
+    if(test=="mi"){
+      data <- apply(data, MARGIN=2, FUN=function(x) as.factor(infotheo::discretize(x, disc="equalwidth", nbins=round(nrow(data))/50)$X))
+      data <- as.data.frame(unclass(data),stringsAsFactors=TRUE)
+      data <- bnlearn:::check.data(data, allow.missing = TRUE)
     }
+    dense_skeleton <- bnlearn:::pc.stable.backend(x=as.data.frame(data), whitelist = NULL, blacklist = NULL, test=test,
+                                                  alpha=pc_alpha_dense, max.sx = 3, B=0L)
+    # remove dsep set to re-run CI test with stricter threshold
+    attr(dense_skeleton, "dsep.set") <- NULL
+    # detect new v-structures with strigent threshold
+    dense_skeleton_obj <- learn_arc_directions_pdag(x=as.data.frame(data), local.structure = dense_skeleton,
+                                               blacklist=NULL, whitelist=NULL, max.sx = 3, debug=debug,
+                                               test=test, alpha=pc_alpha, vs=NULL)
+    pdag_amat <- bnlearn:::arcs2amat(dense_skeleton_obj$arcs, colnames(data))
+    init_cpdag <- empty.graph(nodelabels)
+    amat(init_cpdag, check.cycles=FALSE) <- pdag_amat
+    
+    # add directed edges to whitelist (ensures edge is strongly protected)
+    init_cpdag$learning$whitelist <- bnlearn::directed.arcs(init_cpdag)
+    end_time_est = Sys.time()
+  }else{ # run sparsebn to obtain initial cpdag
+    start_time_est = Sys.time()
+    # estimate solution path; sb_dag returns multiple DAGs
+    dat <- sparsebnData(data, type = "c", ivn = NULL)
+    sb_dag <- ccdrAlgorithm::ccdr.run(data = dat,
+                                      lambdas.length = ccdr_params$lambdas.length,
+                                      whitelist = NULL,
+                                      blacklist = NULL,
+                                      gamma = ccdr_params$gamma,
+                                      error.tol = ccdr_params$error.tol,
+                                      max.iters = ccdr_params$max.iters,
+                                      alpha = ccdr_params$ccdr_alpha,
+                                      verbose = ccdr_params$verbose)
+    dag_index <- sparsebnUtils::select.parameter(sb_dag, dat)
+    # select optimal dag based on PC skeleton density
+    pcnet <- pc.stable(data, alpha=ccdr_pc_alpha)
+    pcnet_edges <- nrow(bnlearn::skeleton(pcnet)$arcs)/2
+    # select dag with the closest number of edges as pc skeleton
+    curr_dag <- sparsebnUtils::select(sb_dag, edges = pcnet_edges*(1))
+    init_skeleton <- sparsebnUtils:::to_bn(curr_dag)$edges
+    init_cpdag <- get_init_cpdag(data, skeleton=init_skeleton, blacklist=NULL, debug=FALSE)
+    end_time_est = Sys.time()
+  }
   end_time = Sys.time()
   total_time <- as.numeric(end_time - start_time, unit = "secs")
-  return(list(init_cpdag=init_cpdag, total_time=total_time))
+  return(list(amat = amat(init_cpdag), total_time=total_time))
 }
 
 
-# purpose: extract colliders from bnlearn obj
-# modified from bnlearn:::colliders.backend
+
+# function: extract colliders nodes in skeleton; modified from bnlearn:::colliders.backend
+# input: adjacency matrix
+# output: local structure (skeleton) + separating set
 colliders_backend_mod <- function(x, return.arcs = FALSE, including.shielded = TRUE,
                              including.unshielded = TRUE, debug = FALSE) {
   
@@ -190,7 +182,7 @@ colliders_backend_mod <- function(x, return.arcs = FALSE, including.shielded = T
 }
 
 
-# purpose: performs v-structure detection & edge orientation to get PDAG
+# function: performs v-structure detection & edge orientation to get PDAG
 # input: data, skeleton
 # output: adjacency matrix of learned pdag
 detect_v_struct <- function(data, skeleton, blacklist=NULL, 
@@ -210,6 +202,7 @@ detect_v_struct <- function(data, skeleton, blacklist=NULL,
 }
 
 
+# function: converts DAG to CPDAG with option to exclude edges (and certain orientations)
 # input: estimated DAG/skeleton, blacklist of edges
 # output: CPDAG of the input structure
 get_init_cpdag <- function(data, skeleton, blacklist=NULL, debug=FALSE){
@@ -230,7 +223,9 @@ get_init_cpdag <- function(data, skeleton, blacklist=NULL, debug=FALSE){
   return(gam_cpdag)
 }
 
-
+# function: converts a PDAG to DAG
+# input: pdag, name of nodes
+# output: DAG if successful, PDAG if not
 extend_to_dag <- function(pdag, nodelabels){
   pdag_amat <- bnlearn:::arcs2amat(pdag$arcs, nodelabels)
   temp_cpdag <- empty.graph(nodelabels)
@@ -244,7 +239,11 @@ extend_to_dag <- function(pdag, nodelabels){
 }
 
 
-# returns PDAG where v-structures are detected, but Meek's rule is not applied yet
+
+# function: converts skeleton to PDAG with detected v-structures; Meek's rule is not applied yet
+# modified from bnlearn:::learn.arc.directions
+# input: estimated skeleton, blacklist of edges
+# output: PDAG of the input structure
 learn_arc_directions_pdag <- function (x, cluster = NULL, local.structure, whitelist, blacklist, 
           test, alpha, B=NULL, max.sx = ncol(data), debug = FALSE, vs=NULL, return_vs_only=F, n_max=50) 
 {
@@ -274,24 +273,18 @@ learn_arc_directions_pdag <- function (x, cluster = NULL, local.structure, white
   # orient edges
   pdag_amat <- bnlearn:::arcs2amat(pdag$arcs, colnames(data))
   pdag_amat <- phsl:::apply_cpdag_rules(pdag=pdag_amat, nodes=nodes, remove_invalid=TRUE, debug=debug)
-  # pdag <- bnlearn:::cpdag.backend(pdag, fix=T, debug = debug)
   
-  
-  # can_extend_to_dag <- extend_to_dag(pdag, nodes)
   
   # check for cycles
   contains_cycles <- bnlearn:::is.acyclic(bnlearn:::amat2arcs(pdag_amat, nodes), nodes, directed=T)
-  # contains_cycles <- bnlearn:::is.acyclic(pdag$arcs, nodes, directed=T)
   counter <- 1
   while(contains_cycles==FALSE && counter < 25){
-    # alpha <- alpha*0.9
     counter <- counter+1
     vs = vs[sample(c(1:nrow(vs))), ]
     # vs = do.call("rbind", bnlearn:::vstruct.detect(nodes = nodes, arcs = arcs, 
     #                                                mb = local.structure, data = x, alpha = alpha, 
     #                                                test = test, blacklist = blacklist, max.sx = max.sx, 
     #                                                debug = debug))
-    # print(alpha)
     arcs = bnlearn:::vstruct.apply(arcs = arcs, vs = vs, nodes = nodes, 
                                    debug = debug)
     pdag = list(learning = learning, nodes = structure(rep(0, length(nodes)), names = nodes), arcs = arcs, vs=vs)
@@ -307,6 +300,10 @@ learn_arc_directions_pdag <- function (x, cluster = NULL, local.structure, white
   return(pdag)
 }
 
+
+# function: detects v-structures in skeleton using separating set
+# modified from bnlearn:::vstruct.detect
+# output: PDAG of the input structure
 
 vstruct_detect_mod <- function (nodes, arcs, mb, data, alpha, B = NULL, test, blacklist, 
                                 max.sx = ncol(data), debug = FALSE) 
@@ -370,6 +367,8 @@ vstruct_detect_mod <- function (nodes, arcs, mb, data, alpha, B = NULL, test, bl
 
 # function: adding the detecting v-structures to the skeleton
 # modified from bnlearn:::vstruct.apply
+# input: detected edges, v-structures
+# output: PDAG of the input structure
 vstruct_apply_mod <- function (arcs, vs, nodes, debug = FALSE) 
 {
   if (debug) 

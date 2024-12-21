@@ -4,8 +4,10 @@
 
 Code repository for a causal discovery method focused on learning non-linear relations from data
 
+Author: Stella Huang (stellahyh@g.ucla.edu)
 
-## Summary:
+
+## Summary
 
 - Highlights: 
 
@@ -21,6 +23,13 @@ Code repository for a causal discovery method focused on learning non-linear rel
 	2. Edge orientation: employs likelihood-ratio based statistical test to determine the true orientation of undirected edges in the graph
 	3. Edge deletion: utilizes significance test results of covariates to delete superfluous edges from the graph, yielding the final DAG structure
 	4. (For practical purposes) Graph refinement: converts previous output from PDAG to DAG by applying the likelihood test to undirected edges, if there exists any
+
+
+## Running the Code
+
+- See file `test_script.R` for an example
+	- shows and evaluates results from all 4 steps
+	- returns F1 score, SHD, breakdown of learned edges, and runtime
 
 
 ## Dependencies
